@@ -21,7 +21,7 @@ export let students: Student[] = [
     courses: ["261207", "261497"],
   },
   {
-    studentId: "650615003",
+    studentId: "650610003",
     firstName: "Emily",
     lastName: "Blunt",
     program: "ISNE",
