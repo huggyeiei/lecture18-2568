@@ -1,20 +1,163 @@
 import { Router, type Request, type Response } from "express";
+import dotenv from "dotenv";
+dotenv.config();
+
+import type { User, CustomRequest } from "../libs/types.js";
+
+// import database
 import { users, enrollments, reset_enrollments, students } from "../db/db.js";
-import {
-  authenticateToken,
-  requireAdmin,
-  requireStudentOwner,
-  requireAdminOrOwner,
-} from "../middlewares/authenticateToken.js";
+
+import { authenticateToken } from "../middlewares/authenMiddleware.js";
+
+import { checkRoleAdmin } from "./checkRoleAdmin.js";
 
 const router = Router();
 
-router.use(authenticateToken);
+// GET /api/v2/enrollments
+router.get("/", authenticateToken, checkRoleAdmin, (req: CustomRequest, res: Response) => {
+    try{
+         const enrollmentInfo = users
+         .filter((u: User) => u.role === "STUDENT" && u.studentId) 
+         .map((u: User) => {
 
-const isValidCourseId = (v: unknown): v is string =>
-  typeof v === "string" && v.length === 6;
+            const studentEnrollment = enrollments.filter((e) => e.studentId === u.studentId);
 
-router.post("/reset", requireAdmin, (_req: Request, res: Response) => {
+            return {
+                studentId: u.studentId,
+                courses: studentEnrollment.map((en) => ({
+                    courseId: en.courseId
+                }))
+            };
+         });
+
+            // return all users
+        return res.status(200).json({
+            success: true,
+            message: "Enrollments Information",
+            data: enrollmentInfo,
+        });
+
+    } catch (err) {
+        return res.status(500).json({
+            success: false,
+            message: "Something is wrong, please try again",
+            error: err,
+        });
+    }
+});
+
+router.get("/:studentId", authenticateToken, (req: CustomRequest, res: Response) => {
+  try {
+    const studentId = req.params.studentId;
+    const user = req.user;
+
+
+    const student = students.find(s => s.studentId === studentId);
+    if (!student){
+      return res.status(404).json({
+        success: false,
+        message: "Student not found"
+      });
+    }
+
+
+    if(user?.role !== "ADMIN" && user?.studentId !== studentId){
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden access"
+      });
+    }
+
+
+
+
+    return res.status(200).json({
+      success: true,
+      message: "Student Information",
+      data: student
+    });
+    
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: err
+    });
+  }
+});
+
+
+router.post("/:studentId", authenticateToken, (req: CustomRequest, res: Response) => {
+  try {
+    const studentId = req.params.studentId as string;
+    const user = req.user;
+    const courseId = req.body.courseId as string;
+    const bodyStudentId = req.body.studentId;
+
+
+    if(user?.role === "ADMIN" || (user?.role === "STUDENT" && user.studentId !== studentId)) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden access"
+      });
+    }
+
+    if(bodyStudentId && bodyStudentId !== studentId){
+      return res.status(400).json({
+        success: false,
+        message: "studentId in body does not match studentId in URL parameters"
+      });
+    }
+
+    if (!courseId || typeof courseId !== "string" || courseId.length !== 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid courseId. Must be a string of 6 characters."
+      });
+    }
+
+
+    
+    const enrollmentexists = enrollments.find(e => e.studentId === studentId && e.courseId === courseId);
+    if(enrollmentexists){
+      return res.status(409).json({
+        success: false,
+        message: "studentId && courseId already exist"
+      });
+
+    }
+
+    const newEnrollment = { studentId: studentId as string, courseId: courseId as string };
+    enrollments.push(newEnrollment);
+    
+
+    const remain = enrollments
+      .filter(e => e.studentId === studentId)
+      .map( e => 
+         e.courseId
+      );
+
+    return res.status(201).json({
+      success: true,
+      message: `studentId ${studentId} && courseId ${courseId} has been added successfully`,
+      data: {
+        studentId: studentId,
+        courseId: remain
+      }
+    });
+    
+  } catch(err) {
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: err
+    });
+  }
+
+});
+
+// POST /api/v2/enrollments/reset
+router.post("/reset", authenticateToken, checkRoleAdmin, (req: Request, res: Response) => {
   try {
     reset_enrollments();
     return res.status(200).json({
@@ -30,152 +173,68 @@ router.post("/reset", requireAdmin, (_req: Request, res: Response) => {
   }
 });
 
-router.get("/", requireAdmin, (_req, res: Response) => {
+router.delete("/:studentId", authenticateToken, (req: CustomRequest, res: Response) => {
   try {
-    const data = users
-      .filter((u) => u.role === "STUDENT" && !!u.studentId)
-      .map((u) => {
-        const list = enrollments.filter((e) => e.studentId === u.studentId);
-        return {
-          studentId: u.studentId,
-          courses: list.map((e) => ({ courseId: e.courseId })),
-        };
+    const studentId = req.params.studentId;
+    const user = req.user;
+    const courseId = req.body.courseId;
+    const bodyStudentId = req.body.studentId;
+
+    if(!user || user.role !== "STUDENT" || user.studentId !== studentId){
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to modify another student's data"
       });
-
-    return res.status(200).json({
-      success: true,
-      message: "Enrollments Information",
-      data,
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Something is wrong, please try again",
-      error: err,
-    });
-  }
-});
-
-router.get("/:studentId", requireAdminOrOwner, (req, res: Response) => {
-  try {
-    const studentId = req.params.studentId as string;
-
-    const student = students.find((s) => s.studentId === studentId);
-    if (!student) {
-      return res.status(404).json({ success: false, message: "Student not found" });
     }
 
-    const list = enrollments.filter((e) => e.studentId === studentId);
-    return res.status(200).json({
-      success: true,
-      message: "Student enrollments",
-      data: { studentId, courses: list.map((e) => ({ courseId: e.courseId })) },
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Something went wrong",
-      error: err,
-    });
-  }
-});
-
-router.post("/:studentId", requireStudentOwner, (req, res: Response) => {
-  try {
-    const studentId = req.params.studentId as string; 
-    const { courseId, studentId: bodyStudentId } = (req.body ?? {}) as {
-      courseId?: unknown;
-      studentId?: string;
-    };
-
-    if (bodyStudentId && bodyStudentId !== studentId) {
+    if(bodyStudentId && bodyStudentId !== studentId){
       return res.status(400).json({
         success: false,
-        message: "studentId in body does not match studentId in URL parameters",
+        message: "studentId in body does not match studentId in URL parameters"
       });
     }
 
-    if (!isValidCourseId(courseId)) {
+    if(!courseId || typeof courseId !== "string" || courseId.length !== 6){
       return res.status(400).json({
         success: false,
-        message: "Invalid courseId. Must be a string of 6 characters.",
+        message: "Invalid courseId. Must be a string of 6 characters."
       });
     }
 
-    const exists = enrollments.some(
-      (e) => e.studentId === studentId && e.courseId === courseId
-    );
-    if (exists) {
-      return res.status(409).json({ success: false, message: "Duplicate enrollment" });
+    const enrollmentIndex = enrollments.findIndex( e => e.studentId === studentId && e.courseId === courseId);
+
+    if (enrollmentIndex === -1){
+      return res.status(404).json({
+        success: false,
+        message: "Enrollment doesn't exist"
+      });
     }
 
-    enrollments.push({ studentId, courseId }); 
+    enrollments.splice(enrollmentIndex,1);
 
     const remain = enrollments
-      .filter((e) => e.studentId === studentId)
-      .map((e) => e.courseId);
-
-    return res.status(201).json({
-      success: true,
-      message: `studentId ${studentId} added course ${courseId} successfully`,
-      data: { studentId, courses: remain },
-    });
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Something went wrong",
-      error: err,
-    });
-  }
-});
-
-router.delete("/:studentId", requireStudentOwner, (req, res: Response) => {
-  try {
-    const studentId = req.params.studentId as string;
-    const { courseId, studentId: bodyStudentId } = (req.body ?? {}) as {
-      courseId?: unknown;
-      studentId?: string;
-    };
-
-    if (bodyStudentId && bodyStudentId !== studentId) {
-      return res.status(400).json({
-        success: false,
-        message: "studentId in body does not match studentId in URL parameters",
-      });
-    }
-
-    if (!isValidCourseId(courseId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid courseId. Must be a string of 6 characters.",
-      });
-    }
-
-    const idx = enrollments.findIndex(
-      (e) => e.studentId === studentId && e.courseId === courseId
-    );
-    if (idx === -1) {
-      return res.status(404).json({ success: false, message: "Enrollment not found" });
-    }
-
-    enrollments.splice(idx, 1);
-
-    const remain = enrollments
-      .filter((e) => e.studentId === studentId)
-      .map((e) => e.courseId);
+      .filter(e => e.studentId === studentId)
+      .map( e => 
+         e.courseId
+      );
 
     return res.status(200).json({
       success: true,
-      message: `Student ${studentId} dropped course ${courseId} successfully`,
-      data: { studentId, courses: remain },
+      message: `Student ${studentId} && Course ${courseId} has been deleted successfully`,
+      data: {
+        studentId: studentId,
+        courseId: remain
+      }
     });
-  } catch (err) {
+
+  } catch (err){
     return res.status(500).json({
       success: false,
       message: "Something went wrong",
-      error: err,
+      error: err
     });
   }
+
 });
 
 export default router;
